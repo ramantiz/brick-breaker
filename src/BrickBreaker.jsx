@@ -18,6 +18,12 @@ const BRICK_HEIGHT = 24;
 // (800 - 724) / 2 = 38
 const BRICK_OFFSET_LEFT = 38; 
 
+// Initial physics constants
+const INITIAL_BALL_SPEED_X = 5;
+const INITIAL_BALL_SPEED_Y = -5;
+const PADDLE_ACCEL = 1.2;
+const PADDLE_FRICTION = 0.85;
+const MAX_PADDLE_SPEED = 10;
 import logo from './assets/logo.png';
 
 export default function BrickBreaker() {
@@ -28,32 +34,46 @@ export default function BrickBreaker() {
 
   // Use refs for mutable values that shouldn't trigger re-render
   const gameState = useRef({
-    ball: { x: 0, y: 0, dx: BALL_SPEED_X, dy: BALL_SPEED_Y },
-    paddle: { x: 0 },
+    ball: { x: 0, y: 0, dx: INITIAL_BALL_SPEED_X, dy: INITIAL_BALL_SPEED_Y },
+    paddle: { x: 0, vx: 0 },
     bricks: [],
+    score: 0,
+    lastTime: 0,
     rightPressed: false,
     leftPressed: false,
-    score: 0,
     animationId: null
   });
 
+  const setupCanvas = (canvas) => {
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+
+    ctx.scale(dpr, dpr);
+    return dpr;
+  };
+
   const initGame = (canvas) => {
     const state = gameState.current;
-    state.ball.x = canvas.width / 2;
-    state.ball.y = canvas.height - 40;
+    state.ball.x = 400; // Hardcoded logical center for 800 width
+    state.ball.y = 560;
     
-    // Slight randomization of start direction
-    state.ball.dx = BALL_SPEED_X * (Math.random() > 0.5 ? 1 : -1); 
-    state.ball.dy = BALL_SPEED_Y;
+    // Slight randomization
+    state.ball.dx = INITIAL_BALL_SPEED_X * (Math.random() > 0.5 ? 1 : -1); 
+    state.ball.dy = INITIAL_BALL_SPEED_Y;
     
-    state.paddle.x = (canvas.width - PADDLE_WIDTH) / 2;
+    state.paddle.x = (800 - PADDLE_WIDTH) / 2;
+    state.paddle.vx = 0;
     state.score = 0;
+    state.lastTime = 0;
     setScore(0);
     setIsGameOver(false);
 
     // Initialize bricks
     state.bricks = [];
-    // Colors for gradient rows
     const colors = [
       ['#ff4b4b', '#cc0000'],
       ['#ffaa00', '#cc7700'],
@@ -65,7 +85,12 @@ export default function BrickBreaker() {
     for (let c = 0; c < BRICK_COLUMN_COUNT; c++) {
       state.bricks[c] = [];
       for (let r = 0; r < BRICK_ROW_COUNT; r++) {
-        state.bricks[c][r] = { x: 0, y: 0, status: 1, colors: colors[r] };
+        state.bricks[c][r] = { 
+          x: c * (BRICK_WIDTH + BRICK_PADDING) + BRICK_OFFSET_LEFT,
+          y: r * (BRICK_HEIGHT + BRICK_PADDING) + BRICK_OFFSET_TOP,
+          status: 1, 
+          colors: colors[r] 
+        };
       }
     }
   };
@@ -143,19 +168,13 @@ export default function BrickBreaker() {
         for (let r = 0; r < BRICK_ROW_COUNT; r++) {
           const b = bricks[c][r];
           if (b.status === 1) {
-            const brickX = c * (BRICK_WIDTH + BRICK_PADDING) + BRICK_OFFSET_LEFT;
-            const brickY = r * (BRICK_HEIGHT + BRICK_PADDING) + BRICK_OFFSET_TOP;
-            b.x = brickX;
-            b.y = brickY;
-            
             ctx.beginPath();
-            ctx.roundRect(brickX, brickY, BRICK_WIDTH, BRICK_HEIGHT, 6);
-            const gradient = ctx.createLinearGradient(brickX, brickY, brickX, brickY + BRICK_HEIGHT);
+            ctx.roundRect(b.x, b.y, BRICK_WIDTH, BRICK_HEIGHT, 6);
+            const gradient = ctx.createLinearGradient(b.x, b.y, b.x, b.y + BRICK_HEIGHT);
             gradient.addColorStop(0, b.colors[0]);
             gradient.addColorStop(1, b.colors[1]);
             ctx.fillStyle = gradient;
             ctx.fill();
-            // Optional: sleek inner border
             ctx.lineWidth = 1.5;
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
             ctx.stroke();
@@ -171,18 +190,32 @@ export default function BrickBreaker() {
         for (let r = 0; r < BRICK_ROW_COUNT; r++) {
           const b = bricks[c][r];
           if (b.status === 1) {
+            // Simple AABB is fine if we limit velocity/dt, 
+            // but we can add a small padding check for high speed stability
             if (
-              ball.x > b.x &&
-              ball.x < b.x + BRICK_WIDTH &&
-              ball.y > b.y &&
-              ball.y < b.y + BRICK_HEIGHT
+              ball.x + BALL_RADIUS > b.x &&
+              ball.x - BALL_RADIUS < b.x + BRICK_WIDTH &&
+              ball.y + BALL_RADIUS > b.y &&
+              ball.y - BALL_RADIUS < b.y + BRICK_HEIGHT
             ) {
-              ball.dy = -ball.dy;
+              // Determine side of collision for better physics
+              const fromTop = Math.abs(ball.y - b.y);
+              const fromBottom = Math.abs(ball.y - (b.y + BRICK_HEIGHT));
+              const fromLeft = Math.abs(ball.x - b.x);
+              const fromRight = Math.abs(ball.x - (b.x + BRICK_WIDTH));
+              
+              const minDist = Math.min(fromTop, fromBottom, fromLeft, fromRight);
+              
+              if (minDist === fromTop || minDist === fromBottom) {
+                ball.dy = -ball.dy;
+              } else {
+                ball.dx = -ball.dx;
+              }
+
               b.status = 0;
               gameState.current.score++;
               setScore(gameState.current.score);
-              if (gameState.current.score === BRICK_ROW_COUNT * BRICK_COLUMN_COUNT) {
-                 // Game Won!
+              if (gameState.current.score === BRICK_COUNT) {
                  setIsGameOver(true);
               }
             }
@@ -191,76 +224,81 @@ export default function BrickBreaker() {
       }
     };
 
-    const draw = () => {
-      if (!hasStarted || isGameOver) {
-         if (hasStarted && gameState.current.animationId) {
-             cancelAnimationFrame(gameState.current.animationId);
-         }
-         return;
-      }
-      
+    const draw = (currentTime) => {
+      if (!hasStarted || isGameOver) return;
+
       const state = gameState.current;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!state.lastTime) state.lastTime = currentTime;
+      const deltaTime = (currentTime - state.lastTime) / (1000 / 60);
+      state.lastTime = currentTime;
+
+      // Anti-tunneling constraint: max deltaTime to prevent skips
+      const dt = Math.min(deltaTime, 1.5);
+
+      ctx.clearRect(0, 0, 800, 600); // Clear logical dimensions
 
       drawBricks();
       drawBall();
       drawPaddle();
       collisionDetection();
 
-      // Wall collision (left and right)
-      if (state.ball.x + state.ball.dx > canvas.width - BALL_RADIUS || state.ball.x + state.ball.dx < BALL_RADIUS) {
+      // Wall collision
+      if (state.ball.x + state.ball.dx * dt > 800 - BALL_RADIUS || state.ball.x + state.ball.dx * dt < BALL_RADIUS) {
         state.ball.dx = -state.ball.dx;
       }
-      // Wall collision (top)
-      if (state.ball.y + state.ball.dy < BALL_RADIUS) {
+      if (state.ball.y + state.ball.dy * dt < BALL_RADIUS) {
         state.ball.dy = -state.ball.dy;
       } 
-      // Floor intersection / Paddle collision
-      else if (state.ball.y + state.ball.dy > canvas.height - BALL_RADIUS - 10) {
-        
-        // Check if hitting the paddle specifically
+      // Paddle/Floor
+      else if (state.ball.y + state.ball.dy * dt > 600 - BALL_RADIUS - 10) {
+        const nextX = state.ball.x + state.ball.dx * dt;
         if (
-            state.ball.x > state.paddle.x && 
-            state.ball.x < state.paddle.x + PADDLE_WIDTH && 
-            state.ball.y + state.ball.dy < canvas.height - 10 && 
-            state.ball.y + state.ball.dy > canvas.height - PADDLE_HEIGHT - 10
+            nextX > state.paddle.x - 5 && 
+            nextX < state.paddle.x + PADDLE_WIDTH + 5 &&
+            state.ball.y < 600 - 10 // Above floor
         ) {
-            // Apply a nuanced bounce depending on where it hits the paddle
-            const hitPoint = state.ball.x - (state.paddle.x + PADDLE_WIDTH / 2);
-            // Normalizing hitPoint from -1 to 1 based on center
+            // Edge bounce logic: angle depends on hit location
+            const hitPoint = nextX - (state.paddle.x + PADDLE_WIDTH / 2);
             const normalizedHitPoint = hitPoint / (PADDLE_WIDTH / 2);
             
-            // Adjust X velocity slightly based on spin/hit location
-            state.ball.dx = state.ball.dx > 0 
-                ? Math.min(Math.max(state.ball.dx + normalizedHitPoint * 2, 2), 8) 
-                : Math.max(Math.min(state.ball.dx + normalizedHitPoint * 2, -2), -8);
-                
-            state.ball.dy = -state.ball.dy;
+            // Adjust X speed based on where it hit the paddle
+            const speed = Math.sqrt(state.ball.dx * state.ball.dx + state.ball.dy * state.ball.dy);
+            state.ball.dx = normalizedHitPoint * speed * 0.8;
+            state.ball.dy = -Math.abs(state.ball.dy); // Always bounce UP
             
-            // Push ball fully above paddle to prevent getting stuck
-            state.ball.y = canvas.height - PADDLE_HEIGHT - 10 - BALL_RADIUS;
+            // Sanitize Y velocity to prevent near-horizontal traps
+            if (Math.abs(state.ball.dy) < 2) state.ball.dy = -3;
+
+            state.ball.y = 600 - PADDLE_HEIGHT - 10 - BALL_RADIUS;
         } 
-        else if (state.ball.y + state.ball.dy > canvas.height - BALL_RADIUS) {
+        else if (state.ball.y + state.ball.dy * dt > 600 - BALL_RADIUS) {
           setIsGameOver(true);
           return;
         }
       }
 
-      state.ball.x += state.ball.dx;
-      state.ball.y += state.ball.dy;
+      state.ball.x += state.ball.dx * dt;
+      state.ball.y += state.ball.dy * dt;
 
-      // Paddle movement
-      if (state.rightPressed && state.paddle.x < canvas.width - PADDLE_WIDTH) {
-        state.paddle.x += PADDLE_SPEED;
-      } else if (state.leftPressed && state.paddle.x > 0) {
-        state.paddle.x -= PADDLE_SPEED;
+      // Paddle Momentum
+      if (state.rightPressed) {
+        state.paddle.vx = Math.min(state.paddle.vx + PADDLE_ACCEL * dt, MAX_PADDLE_SPEED);
+      } else if (state.leftPressed) {
+        state.paddle.vx = Math.max(state.paddle.vx - PADDLE_ACCEL * dt, -MAX_PADDLE_SPEED);
+      } else {
+        state.paddle.vx *= PADDLE_FRICTION;
       }
+
+      state.paddle.x += state.paddle.vx * dt;
+      state.paddle.x = Math.max(0, Math.min(800 - PADDLE_WIDTH, state.paddle.x));
 
       state.animationId = requestAnimationFrame(draw);
     };
 
+    setupCanvas(canvas);
     if (hasStarted && !isGameOver) {
-      draw();
+      state.lastTime = performance.now();
+      state.animationId = requestAnimationFrame(draw);
     }
 
     return () => {
