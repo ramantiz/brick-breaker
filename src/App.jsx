@@ -1,4 +1,5 @@
 import BrickBreaker from './BrickBreaker'
+import './App.css'
 
 function App() {
   return (

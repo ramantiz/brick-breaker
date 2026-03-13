@@ -297,6 +297,7 @@ export default function BrickBreaker() {
 
     setupCanvas(canvas);
     if (hasStarted && !isGameOver) {
+      const state = gameState.current;
       state.lastTime = performance.now();
       state.animationId = requestAnimationFrame(draw);
     }
